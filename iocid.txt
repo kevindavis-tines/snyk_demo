@@ -1,0 +1,798 @@
+import re
+import sys
+import whois
+import socket
+import dns.resolver
+import requests 
+import requests as req
+
+from time import sleep
+
+
+###THINGS FOR VIRUSTOTAL#######
+import hashlib
+import time
+import json
+import urllib,argparse
+from pprint import pprint 
+###API KEYS 
+virusTotal="INSERTTHEAPIHERE"
+
+
+######REQUESTS TIMEOUT FUNCTIONALITY######
+import eventlet
+eventlet.monkey_patch()
+
+###PICTURE FOR DEMISTO -- rasturize
+##### demisto/chromium 
+#calling out with api calls are there extra charges: There are no charges 
+###FIND OUT IF WE CAN GET SOME CUSTOM GIT INTO THE LABS 
+
+
+######import screenshot capabilities with the tools#####
+from selenium import webdriver
+from PIL import Image
+import chromedriver_binary
+from selenium.webdriver.chrome.options import Options 
+
+######## IMPORT DATE TIME ##########
+from datetime import datetime
+
+
+######## SSL INFORMATION AND SOCKETS 
+import ssl 
+from requests.packages.urllib3.contrib import pyopenssl as reqs
+
+
+
+
+
+
+
+md5IOC="^[a-f0-9]{32}$"
+sha1IOC="\b[0-9a-f]{5,40}\b"
+sha256IOC="[A-Fa-f0-9]{64}"
+
+emailIOC="[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*@(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]*[a-z0-9])?"
+
+
+urlIOC="^(ftp:\/\/|http:\/\/|https:\/\/|www.|)[a-z0-9]+([\-\.]{1}[a-z0-9]+)*\.[a-z]{2,5}(:[0-9]{1,5})?(\/.*)?$"
+
+ipv4IOC="^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$"
+ipv4Port="^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d{1,5}$"
+
+ipv6IOC="(([0-9a-fA-F]{1,4}:){7,7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|:((:[0-9a-fA-F]{1,4}){1,7}|:)|fe80:(:[0-9a-fA-F]{0,4}){0,4}%[0-9a-zA-Z]{1,}|::(ffff(:0{1,4}){0,1}:){0,1}((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])|([0-9a-fA-F]{1,4}:){1,4}:((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9]))"
+
+
+
+
+
+
+
+splunkDomains=""
+splunkIPv4=""
+splunkIPv6=""
+splunkHashes=""
+splunk256Hash=""
+splunkEmails=""
+splunkPorts=""
+
+
+
+splunkSearch="index=carbonblack type=threat threatInfo.summarty IN (*malware*, *virus*, *trojan*,*PUP*,*PUA*) threatInfo.summary!=\"the application * attempted a network connection to a Low Reputation or known malware site.\" url "
+
+
+
+
+
+zipArray = [".tar.gz", ".tar", ".zip", ".7z", ".bz2", ".bzip",
+            ".gzip", ".cab", ".rar", ".zz"]
+
+riskCountry = ["AF","DZ","BI","CM","CF","TD","CN","CO","CD","CU","EG","SV","ER","HT","HN",
+"HK","IR","IQ","IL","KE","KP","KR", "LB","LY","ML","MR","MX",
+"NE","NG","PK","PH","RU","SA","SO","SD","SY","TH","UA","VE","YE","PA"]
+
+
+
+
+
+#VIRUSTOTAL REQUESTS 
+requests.urllib3.disable_warnings()
+client =  requests.session()
+client.verify = False
+
+
+
+def get_hash_report(filehash):
+    url = 'https://www.virustotal.com/vtapi/v2/file/report'
+    params = {"apikey": virusTotal, "resource": filehash, "allinfo": True}
+
+    # perform call
+    r = client.get(url, params=params)
+
+    if r.status_code == 429:
+        print('Encountered rate-limiting. Sleeping for 45 seconds.')
+        sleep(45)
+        get_hash_report(virusTotal, filehash)
+
+    elif r.status_code != 200:
+        print('Encountered unanticipated HTTP error.')
+        print(r.status_code)
+        exit(1)
+
+    elif r.status_code == 200:
+        response = r.json()
+        parse_hash_report(response)
+
+
+def parse_hash_report(response):
+    detections = response['positives']
+    if detections >= 1:
+        scan_results = response['scans']
+
+        print('\nAV Name, Malware Name, Definitions Version, Last Updated')
+        for vendor in scan_results:
+            if scan_results[vendor]['detected']:
+
+                info_date = scan_results[vendor]['update']
+                detected_name = scan_results[vendor]['result']
+                definition_version = scan_results[vendor]['version']
+
+                print('{!s}, {!s}, {!s}, {!s}'.format(vendor, detected_name, definition_version, info_date))
+    else:
+        print('No malicious detections found.')
+
+
+
+
+
+
+
+
+def domainInfo( domain ):
+
+
+    print("=" * 50)
+    print("DOMAIN RECORDS: " + domain )
+    print("=" * 50)
+    print("\n" * 3)
+    try:
+        for x in dns.resolver.query(domain, 'MX'):
+            d = x.to_text()
+            e = d[d.index(' ') + 1 : ]
+            e = e[:-1]
+
+
+            try:
+
+                print("Server MX Records: " + domain + "   " + x.to_text() + " - " + socket.gethostbyname(e))
+
+                if not " " or "127.0.0.1" in str(x):
+                    whoisLookups(x.to_text())
+                    print(" -> IP Address Reputation Check: https://www.cyren.com/security-center/cyren-ip-reputation-check-gate")
+                    print(" -> https://talosintelligence.com/reputation_center/lookup?search=" + socket.gethostbyname(e))
+                    print(" -> https://www.barracudacentral.org/lookups/lookup-reputation")
+                else:
+                    print("[-] A return on an invalid IOC has been found: " + str(x))
+                if not " " or not "127.0.0.1" in socket.gethostbyname(e):
+                    whoisLookups(socket.gethostbyname(e))
+                else:
+                    print("[-] A return on an invalid IOC has been found: " + socket.gethostbyname(e))
+            except Exception as e:
+                print("[!] Failure within Server MX Record query within domainInfo function [ FAILED ]")
+                print(e)
+                pass
+
+        try:
+                    
+            for n in dns.resolver.query(domain, 'NS'):
+                nsr = n.to_text()
+                #sr = nsr[nsr.index(' ') + 1 : ]
+                #sr = sr[:-1]
+                print("Domain Resolve (NS): " + domain + "   " + nsr + " - " + socket.gethostbyname(nsr))
+                print(" -> IP Address Reputation Check: https://www.cyren.com/security-center/cyren-ip-reputation-check-gate")
+                print(" -> https://talosintelligence.com/reputation_center/lookup?search=" + socket.gethostbyname(nsr))
+                print(" -> https://www.barracudacentral.org/lookups/lookup-reputation")
+                if nsr.endswith("."):
+                    nsr = nsr[:-1]
+                    whoisLookups(nsr)
+                if not " " or "127.0.0.1" in nsr:
+                    whoisLookups(nsr)
+                else:
+                    print("[-] A return on an invalid IOC has been found: " + nsr)
+                if not "127.0.0.1" in socket.gethostbyname(nsr):
+                    whoisLookups(socket.gethostbyname(nsr))
+                else:
+                    print("[-] Invalid whois record : " + socket.gethostbyname(nsr))
+                #print (nsr)
+
+            if not "localhost" in domain:
+                print("E-Mail Whois Lookup: " + domain)
+                whoisLookups( domain )
+            if not "localhost" in str(e):
+                print("E-Mail Whois Lookup: " + e )
+        except Exception as e:
+            print("[!] Failure within NS resolve within domainInfo [ FAILED ]")
+            print(e)
+            pass
+    except Exception as e:
+        print("[!] Failure within main for call within domainInfo [ FAILED ]")
+        print(e)
+        pass
+
+
+
+def redirectCheck( IOC ):
+
+    print ("=" * 50 + "\n" + "REDIRECT CHECK FOR: " + IOC + "\n" + "=" * 50)
+
+    try:
+        r = requests.get(IOC)
+        print ("Processing " + IOC)
+
+        if len(r.history) > 0:
+            chain = ""
+            code = r.history[0].status_code
+            final_url = r.url
+            for resp in r.history:
+                chain += resp.url + " | "
+            return str(code) + '\t' + str(len(r.history)) + '\t' + chain + '\t' + final_url + '\t'
+        else:
+            return str(r.status_code) + '\t\t\t\t'
+    except requests.ConnectionError:
+        print("Error: failed to connect.")
+        return '0\t\t\t\t'
+        pass
+
+
+
+def sslInfo( IOC ):
+    print("=" * 50 + "\n" + "CERTIFICATE INFORMATION FOR: " + IOC + "\n" + "=" * 50 + "\n")
+    try:
+        ctx = ssl.create_default_context()
+        with ctx.wrap_socket(socket.socket(),server_hostname=IOC) as s:
+            s.connect((IOC, 443))
+            cert = s.getpeercert()
+
+            subject = dict(x[0] for x in cert ['subject'])
+            issued_to = subject['commonName']
+            issuer = dict(x[0] for x in cert ['issuer'])
+            issueBy = issuer['commonName']
+
+            print("Certificate Subject: " + str(subject))
+            print("Certificate Issued to: " + str(issued_to))
+            print("Certificate Issuer: " + str(issuer))
+            print("Certificate Issued By: " + str(issueBy))
+
+            x509 = reqs.OpenSSL.crypto.load_certificate(
+                reqs.OpenSSL.crypto.FILETYPE_PEM,
+                reqs.ssl.get_server_certificate((IOC,443)))
+
+            domains = reqs.get_subj_alt_name(x509)
+
+            if ", (" in domains: 
+                domains.replace(", (", '\n')
+
+            for idx,val in enumerate(domains):
+                print(idx,val)
+
+            print("\n" * 3)
+            #domains = https_cert_subject_alt_names(IOC, 443)
+            #print(domains)
+    except Exception as e:
+        print("[!] Error in SSL Certificate lookup. [ FAILED ]")
+        print(e)
+        pass
+
+
+
+def domainScreenShot( IOC ):
+    print("=" * 50 + "\nWEB DOMAIN SCREEN SHOT\n" + "=" * 50 + "\n")
+    print("[+] Attempting to obtain screen shot of domain... [ OK ]")
+    print(" -> Domain: " + IOC )
+    try:
+        print("do stuff")
+
+
+#        chrome_options = Options()
+ #       chrome_options.add_argument('--headless')
+  #      chrome_options.add_argument('--no-sandbox')
+   #     chrome_options.add_argument('--disable-dev-shm-usage')
+    #    d = webdriver.Chrome('/home/PycharmProjects/chromedriver',chrome_options=chrome_options)
+     #   d.get('https://www.google.nl/')
+
+        chrome_options = Options()
+        chrome_options.add_argument("--headless")
+        chrome_options.add_argument('--no-sandbox')
+        driver = webdriver.Chrome('/usr/lib/chromium-browser/chromedriver', options=chrome_options)
+        driver.get("http://" + IOC)
+
+        time.sleep(20)
+
+
+        driver.save_screenshot("screenshot.png")
+        print('Screen shot obtained')
+        driver.close()
+
+
+        #driver = webdriver.Chrome()
+        #driver.get(IOC);
+        #driver.save_screenshot("screenshot.png");
+        #options = webdriver.ChromeOptions()
+        #options.headless = True 
+        #options.add_argument('--no-sandbox')
+        #options.add_argument('--disable-dev-shm-usage')
+        #driver = webdriver.Chrome(options=options)
+        #URL = IOC 
+        #driver.get("https://" + URL)
+
+        #S = lambda X: driver.execute_script('return document.body.parentNode.scroll'+X)
+        #driver.set_window_size(S('1280'),S('1900')) # May need manual adjustment
+        #driver.find_element_by_tag_name('body').screenshot('web_screenshot.png')
+        #driver.quit()
+
+        print("\n" * 3)
+
+
+    except Exception as e:
+        print("Error obtaining image")
+        print(e)
+        print("\n" * 3)
+        pass
+
+def portID( portNum ):
+    print("[+] Received a port number of: " + portNum)
+    print("[?] Please identify port with: https://www.grc.com/port_" + portNum + ".htm")
+
+def domainTests( IOC ):
+    print("[+] Testing domain / IP information [ ok ]" )
+    print(" -> Testing: " + IOC)
+   
+    try:
+        if not "http://" in IOC:
+            resp = req.get("http://" + IOC, timeout=15)
+        else:
+            resp = req.get(IOC,timeout=15)
+            resp.close()
+        
+        print(" -> Server Status Code: " + str(resp.status_code))
+    except req.exceptions.ConnectionError:
+        print(" [!] The connection has been refused. [ FAILED ]")
+        pass
+    finally:
+        if not "https://" in IOC:
+            resp = req.get("https://" + IOC, timeout=15)
+        else:
+            resp = req.get(IOC)
+            print(" -> Server Status Code: " + str(resp.status_code))
+            resp.close()
+    pass
+
+
+    try:
+
+        serverCode = str(resp.status_code)
+        if len(serverCode) > 0:
+            if ( serverCode == "100" ):
+                print(" Code: " + serverCode + " means continue.")
+            elif ( serverCode == "101" ):
+                print(" Code: " + serverCode + " means the server switching protocols.")
+            elif ( serverCode == "200" ):
+                print(" Code: " + serverCode + " means the server is up and functioning.")
+                sslInfo(IOC)
+            elif ( serverCode == "201" ):
+                print(" Code: " + serverCode + " means created.")
+            elif ( serverCode == "202" ):
+                print(" Code: " + serverCode + " means accepted.")
+            elif ( serverCode == "203" ): 
+                print(" Code: " + serverCode + " Means Non-Authorative information")
+            elif ( serverCode == "204" ):
+                print(" Code: " + serverCode + " Means No Content") 
+            elif ( serverCode == "205" ):
+                print(" Code: " + serverCode + " Reset Content")
+            elif ( serverCode == "206" ):
+                print(" Code: " + serverCode + " Means Partial Content")
+            elif ( serverCode == "300" ):
+                print(" Code: " + serverCode + " Means Multiple Choices")
+            elif ( serverCode == "301" ):
+                print(" Code: " + serverCode + " Means Moved Permanently")
+            elif ( serverCode == "302" ):
+                print(" Code: " + serverCode + " Means Found")
+            elif ( serverCode == "303" ):
+                print(" Code: " + serverCode + " Means See Other")
+            elif ( serverCode == "304" ):
+                print(" Code: " + serverCode + " Means Not Modified")
+            elif ( serverCode == "305" ):
+                print(" Code: " + serverCode + " Means use proxy")
+            elif ( serverCode == "307" ):
+                print(" Code: " + serverCode + " Means Temporary Redirect")
+                print("     -> Testing " + IOC + " redirect status... [ OK ]")
+                print (redirectCheck( IOC )) 
+            elif ( serverCode == "400" ):
+                print(" Code: " + serverCode + " Means Bad Request")
+            elif ( serverCode == "401" ):
+                print(" Code: " + serverCode + " Means Unauthorized")
+            elif ( serverCode == "402" ):
+                print(" Code: " + serverCode + " Means Payment Required")
+            elif ( serverCode == "403" ):
+                print(" Code: " + serverCode + " Means Forbidden")
+            elif ( serverCode == "404" ):
+                print(" Code: " + serverCode + " Means Not Found [ WARNING ]")
+            elif ( serverCode == "405" ):
+                print(" Code: " + serverCode + " Means Method Not Allowed")
+            elif ( serverCode == "406" ):
+                print(" Code: " + serverCode + " Means Not Acceptable")
+            elif ( serverCode == "407" ):
+                print(" Code: " + serverCode + " Means Proxy Authentication Required")
+            elif ( serverCode == "408" ):
+                print(" Code: " + serverCode + " Means Request Time-out")
+            elif ( serverCode == "409" ):
+                print(" Code: " + serverCode + " Means Conflict")
+            elif ( serverCode == "410" ):
+                print(" Code: " + serverCode + " Means Gone")
+            elif ( serverCode == "411" ):
+                print(" Code: " + serverCode + " Means Length Required")
+            elif ( serverCode == "412" ):
+                print(" Code: " + serverCode + " Means Precondition Failed")
+            elif ( serverCode == "413" ): 
+                print(" Code: " + serverCode + " Means Request Entity Too Large") 
+            elif ( serverCode == "414" ):
+                print(" Code: " + serverCode + " Means Request-URI Too Large")
+            elif ( serverCode == "415" ):
+                print(" Code: " + serverCode + " Means Unsupported Media Type")
+            elif ( serverCode == "416" ):
+                print(" Code: " + serverCode + " Means Requested range not satisfiable")
+            elif ( serverCode == "417" ):
+                print(" Code: " + serverCode + " Means Expectation Failed") 
+            elif ( serverCode == "500" ):
+                print(" Code: " + serverCode + " Means internal server error") 
+            elif ( serverCode == "501" ):
+                print(" Code: " + serverCode + " Means not implemented") 
+            elif ( serverCode == "502" ):
+                print(" Code: " + serverCode + " Means bad gateway")
+            elif ( serverCode == "503" ):
+                print(" Code: " + serverCode + " Means Service Unavailable") 
+            elif ( serverCode == "504" ):
+                print(" Code: " + serverCode + " Means Gateway time-out")
+            elif ( serverCode == "505" ):
+                print(" Code: " + serverCode + " Means HTTP version not supported")
+            else:
+                print(" An unknown code of: " + serverCode + " has been returned.")
+    except Exception as e:
+        print("Error performing lookup by server status code: [ FAILED ]")
+        print(e)
+        pass
+
+
+
+
+
+
+def numDays(date1, date2):
+
+    return (date2-date1).days
+
+
+def whoisLookups( IOC ):
+    try:
+        #print(d.expiration_date)
+        print("=" * 50 + "\n" + "WHOIS INFO FOR: " + IOC + "\n" + "=" * 50)
+        print("\n")
+        now = datetime.now()
+        d = whois.whois( IOC )
+        cDate = str(d.creation_date)
+        sLoc = str(d.country) + " " + str(d.city) + ", " + str(d.state) + " " + str(d.zipcode)
+        
+        countryStat = str(d.country)
+        
+       
+        for x in riskCountry:
+            #print ("Iteration to lower: " + x.lower())
+            #print("Country to lower: " + countryStat.lower())
+            if ( x.lower() == countryStat.lower() ):
+                print("[!] WARNING: The country of: " + countryStat + " is a high risk to security country. [ WARNING ]")
+            #print(x)
+
+
+        print(sLoc)
+        print(d)
+        
+
+        #if "[" in cDate:
+        #    cDate = cDate.replace("[", '')
+        if " " in cDate:
+            stuff = cDate 
+            cDate = stuff.split(' ')
+            cDate = cDate[0]
+        
+        if "-" in cDate:
+            cDate = cDate.replace("-", ",")
+
+
+
+        cdTime = datetime.strptime(cDate,'%Y,%m,%d')
+        nt = now.strftime("%Y,%m,%d")
+        today = datetime.strptime(nt,"%Y,%m,%d")
+        print(numDays(cdTime,today), "days since registered") 
+        if ( numDays(cdTime,today) ) <= 190:
+            print("[!] The domain creation date is less than or equal to 190 days. Potentially malicious [ WARNING ]")
+        else:
+            print("[+] The domain is older than 190 days and can be a potential indicator that the domain is safe.")
+            print("[+] Domain age is NOT an indicator of safety. Please check for malicious files, URLS or phishing.")
+        
+            daySince=numDays(cdTime,today)
+
+        if ( numDays(cdTime,today) ) > 365:
+            calcY=daySince/365
+            print(" -> Domain is: " + str(calcY) + " years in operation") 
+
+
+    except Exception as e:
+        print("An error in whoislookup has been detected. [ FAILED ]")
+        pass
+
+def emailOSINT( sender,domain,email,sourceIP ):
+    print("E-Mail Sender IOC: " + sender)
+    print("E-Mail Domain IOC: " + domain)
+    print("Full E-Mail Address: " + email)
+    emailDomainIP=socket.gethostbyname(domain)
+    print("E-Mail Domain IP (" + domain + "): " + emailDomainIP) 
+    spoofCount=0 
+
+    for x in dns.resolver.query(domain, 'MX'):
+        d = x.to_text()
+        e = d[d.index(' ') + 1 : ]
+        e = e[:-1]
+
+        print("E-Mail Domain Resolve (MX): " + domain + "   " + x.to_text() + " - " + socket.gethostbyname(e))
+
+        if not " " or "127.0.0.1" in str(x):
+            whoisLookups(x.to_text())
+            print(" -> IP Address Reputation Check: https://www.cyren.com/security-center/cyren-ip-reputation-check-gate")
+            print(" -> https://talosintelligence.com/reputation_center/lookup?search=" + socket.gethostbyname(e))
+            print(" -> https://www.barracudacentral.org/lookups/lookup-reputation")
+        else:
+            print("[-] A return on an invalid IOC has been found: " + str(x))
+        if not " " or not "127.0.0.1" in socket.gethostbyname(e):
+            whoisLookups(socket.gethostbyname(e))
+        else:
+            print("[-] A return on an invalid IOC has been found: " + socket.gethostbyname(e))
+
+    for n in dns.resolver.query(domain, 'NS'):
+        nsr = n.to_text()
+        #sr = nsr[nsr.index(' ') + 1 : ]
+        #sr = sr[:-1]
+        print("E-Mail Domain Resolve (NS): " + domain + "   " + nsr + " - " + socket.gethostbyname(nsr))
+        print(" -> IP Address Reputation Check: https://www.cyren.com/security-center/cyren-ip-reputation-check-gate")
+        print(" -> https://talosintelligence.com/reputation_center/lookup?search=" + socket.gethostbyname(nsr))
+        print(" -> https://www.barracudacentral.org/lookups/lookup-reputation")
+        if nsr.endswith("."):
+            nsr = nsr[:-1]
+            whoisLookups(nsr)
+        if not " " or "127.0.0.1" in nsr:
+            whoisLookups(nsr)
+        else:
+            print("[-] A return on an invalid IOC has been found: " + nsr)
+        if not "127.0.0.1" in socket.gethostbyname(nsr):
+            whoisLookups(socket.gethostbyname(nsr))
+        else:
+            print("[-] Invalid whois record : " + socket.gethostbyname(nsr))
+        #print (nsr)
+
+        if len(sourceIP) > 0:
+            if socket.gethostbyname(e) != sourceIP:
+                spoofCount +=1
+            else:
+                spoofCount -=1
+        else:
+            if ( socket.gethostbyname(e) == domain ):
+                spoofCount -=1 
+            else:
+                spoofCount +=1
+
+    if spoofCount > 0:
+        print("E-Mail Spoofing: Email has been spoofed, or MX records originate from another location.")
+    else:
+        print("E-Mail Spoofing: Email HAS NOT been spoofed.")
+
+
+    print("E-Mail Google Search: " + "intext:" + sender + "||" + domain + "||" + email + " site:facebook.com||instagram.com||linkedin.com||pastebin.com")
+    if not "localhost" in domain:
+        print("E-Mail Whois Lookup: " + domain)
+        whoisLookups( domain )
+    if not "localhost" in str(e):
+        print("E-Mail Whois Lookup: " + e )
+    if len(sourceIP) > 0: 
+        print("E-Mail Source IP Whois Lookup: " + sourceIP)
+        whoisLookups( sourceIP )
+
+
+def ipv4Lookup(ioc):
+
+    try:
+
+            (name, _, ip_address_list)=socket.gethostbyaddr(ioc)
+            ip_address = ip_address_list[0]
+            print(" -> IPv4 Resolves to: " + name)
+            splunkDomains = str(name)
+            if len(splunkDomains) < 1: 
+                splunkDomains = str(name)
+            else:
+                splunkDomains += "," + str(name)
+    except Exception as e:
+        print("Error: " + str(e) )
+        pass
+
+
+
+def identifyIOC(ioc):
+
+
+    if re.match(md5IOC, ioc):
+        print(" -> MD5 Identified: " + ioc)
+        print("=" * 50 )
+        print("MD5 Hash - VirusTotal: " + ioc) 
+        print("=" * 50) 
+        print(" ")
+        get_hash_report(ioc)
+
+    if re.match(sha1IOC, ioc):
+        print(" -> SHA1 Identified: " + ioc)
+        print("=" * 50)
+        print("SHA1 Hash - VirusTotal: " + ioc)
+        print("=" * 50)
+        get_hash_report(ioc)
+   
+    if re.match(ipv6IOC, ioc):
+        print(" -> IPv6 Address Identified: " + ioc)
+        whoisLookups( ioc )
+        global splunkIPv6
+        if len ( splunkIPv6 ) < 1: 
+            splunkIPv6=ioc
+        else:
+            splunkIPv6+="," + ioc
+
+    if re.match(sha256IOC, ioc):
+        print(" -> SHA256 Identified: " + ioc)
+        print("=" * 50)
+        print("SHA256 Hash - VirusTotal: " + ioc) 
+        print("=" * 50)
+        get_hash_report(ioc)
+        global splunk256Hash
+        if len( splunk256Hash ) < 1:
+            splunk256Hash=ioc
+        else:
+            splunk256Hash+="," + ioc
+
+    if re.match(emailIOC, ioc):
+        print(" -> E-Mail Identified: " + ioc)
+        print("=" * 50 + "\n" + "E-MAIL OSINT SEARCHES: " + ioc)
+        print("=" * 50 + "\n")
+        nameOSINT=ioc.split('@', 1)[0]
+        domainOSINT=ioc.split('@', 1)[1]
+        emailOSINT(nameOSINT, domainOSINT, ioc, "")
+        print(" -> Fork name for OSINT: " + nameOSINT)
+        print("     Google Dork: intext:" + nameOSINT + " inurl:instagram.com||pastebin.com||facebook.com||linkedin.com && intext:\"email " + nameOSINT + "\" || intext:" + nameOSINT)
+        print(" -> Domain OSINT: " + domainOSINT)
+        print("     Google Domain Dork: site:" + domainOSINT + " intext:not for public||phishing||malware||credentials||password||forgot")
+        print("\n" * 3)
+
+
+    if re.match(ipv4IOC, ioc):
+        try:
+            print(" -> Identified IPv4 Address: " + ioc)
+            if ( ioc.split('.', 1)[0] + "." + ioc.split('.',-1)[1]  == "192.168") or ( ioc.split('.',1)[0]) == "127" or ( ioc.split('.',1)[0]) == "172" or ( ioc.split('.',1)[0]) ==  "10":
+                print(" [!] Non-routable IP address for internal addressing")
+                print(" [!] The scan will stop checking for this IOC. ")
+            else:
+                ipv4Lookup(ioc)
+                whoisLookups(ioc)
+                domainTests(ioc)
+                global splunkIPv4
+                if len( splunkIPv4 ) < 1:
+                    splunkIPv4+=ioc
+                else:
+                    splunkIPv4+=","+ioc
+        except Exception as e:
+            print("Error within ipv4 searching. [ FAILED ]")
+            print(e)
+            pass
+
+    
+
+    if re.match(ipv4Port, ioc):
+        try:
+            print(" -> Identified IPv4 Address with Port: " + ioc)
+            print(" -> Google Search: https://www.google.com/search?q=what+is+port+" + ioc.split(':', 1)[1])
+            ipOnly = ioc.split(':',1)[0]
+            ipv4Lookup(str(ipOnly))
+            whoisLookups(ipOnly)
+            domainTests(ipOnly)
+            portID( ioc.split(':',1)[1] )
+        except Exception as e:
+            print("Error within IPv4 with Port Search. [ FAILED ]") 
+            print(e)
+            portID( ioc.split(':',1)[1] )
+            pass
+    
+
+    if re.match(urlIOC, ioc):
+        try:
+            print(" -> Identified Domain: " + ioc)
+            whoisLookups(ioc)
+            domainTests(ioc)
+            domainInfo( ioc )
+            domainScreenShot(ioc)
+            #CHECK IF THE DOMAIN REDIRECTS 
+            print("[+] Attempting to check redirect... [ OK ]")
+            print(redirectCheck( ioc ))
+            if "https://" in ioc:
+                result = ioc.replace("https://", '')
+                ioc=result + "/"
+            if "http://" in ioc:
+                result = ioc.replace("http://", '')
+                ioc=result + "/"
+                print(" -> Identified Domain: " + ioc)
+            if "www." in ioc:
+                result = ioc.replace("www.", '')
+                ioc=result + "/"
+            if "/" in ioc:
+                domainSS=ioc
+                result = ioc.split('/', 1)[0]
+                ioc=result + "/"
+                print(" -> Identified Domain (stripped): " + result)
+                splunkDomain=result
+                whoisLookups(result)
+                domainInfo (result)
+                domainTests(result)
+                domainScreenShot(domainSS)
+            else:
+                domainSS=ioc + "/"
+                ioc=result + "/"
+                splunkDomain=result + "/" 
+                whoisLookups(result)
+                domainInfo(result)
+                domainScreenShot(domainSS)
+        except Exception as e:
+            print("[!] Something went wrong with identifying URL/DOMAIN")
+            print(e)
+            pass
+
+
+
+
+
+
+#print("Array test to stuff")
+#for x in zipArray:
+#    print(x)
+
+if len (sys.argv) > 1:
+    print("[+] Attempting to identify IOC... [ OK ]")
+    if len(sys.argv) > 1:
+        for i in range(1, len(sys.argv)):
+                #print(" -> Identifying Indicator: " + sys.argv[i])
+                identifyIOC(sys.argv[i])
+
+    if  len( splunk256Hash )  > 0:
+        print("THE SPLUNKS: " + splunk256Hash)
+        splunkSearch+="IN threatInfo.indicators{}.sha256Hash(" + splunk256Hash + ") "
+
+    if ( len ( splunkDomains )) > 0: 
+        splunkSearch+= " OR deviceInfo.externalIpAddress=" + splunkIPv4 + " "
+
+
+    splunkSearch+= " earliest=-30d | eval Location_POC-case('deviceInfo.groupName' LIKE \"$INDONESIA$\", \"ary.wilbowo@id.g4s.com,Whales.Chan@brinksglobal.com\", 'deviceInfo.groupName' LIKE \"%Philippines%\", \"jommel.santos@ph.g4s.com, whales.chan@brinksglobal.com\") | rename deviceInfo.deviceName AS Host, threatInfo.summary AS Summary, threatInfo.threatCause.actor AS SHA256, url AS \"Threat URL\", deviceInfo.groupName AS \"Geo Location\", threatInfo.incidentID AS \"Threat ID\""
+
+
+   # print("\n" * 20 + splunkSearch)
+
+
+
+else:
+    print("[-] No IOC or option has been utilized. [ FAILED ]")
+
+
+
+
+
